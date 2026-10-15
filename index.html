@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>악보 → 가사 추출기</title>
+<style>
+:root{--bg:#faf8f4;--card:#fff;--text:#2a2622;--muted:#7a7268;--line:#e4ded4;--accent:#b5472f;--accent-t:#fff;color-scheme:light;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1c1a17;--card:#262320;--text:#efe9df;--muted:#a39b8f;--line:#3a3631;--accent:#e0775c;--accent-t:#1c1a17;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#1c1a17;--card:#262320;--text:#efe9df;--muted:#a39b8f;--line:#3a3631;--accent:#e0775c;--accent-t:#1c1a17;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif;line-height:1.6}
+main{max-width:960px;margin:0 auto;padding:28px 18px 48px}
+h1{font-size:1.6rem;margin:0 0 4px}
+p.sub{margin:0 0 22px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:5fr 6fr;gap:16px}
+@media (max-width:760px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;min-height:320px;display:flex;flex-direction:column}
+.card h2{font-size:.95rem;margin:0 0 10px;color:var(--muted);font-weight:600}
+#drop{border:2px dashed var(--line);border-radius:10px;text-align:center;color:var(--muted);cursor:pointer;padding:26px 12px}
+#drop.over{border-color:var(--accent);color:var(--accent)}
+#list{list-style:none;margin:12px 0 0;padding:0;overflow-y:auto;max-height:280px}
+#list li{display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:.9rem}
+#list .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#list .s{color:var(--muted);font-size:.8rem;white-space:nowrap}
+#list button{padding:2px 8px;font-size:.8rem}
+#out{flex:1;overflow-wrap:anywhere;overflow-y:auto;max-height:560px}
+#out.empty{color:var(--muted);font-size:.95rem}
+#out h3{font-size:.85rem;color:var(--accent);margin:18px 0 4px;padding-top:12px;border-top:1px solid var(--line)}
+#out h3:first-child{margin-top:0;border-top:0;padding-top:0}
+#out pre{margin:0;font:inherit;font-size:1.05rem;line-height:1.9;white-space:pre-wrap}
+.row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+button{font:inherit;border-radius:10px;padding:10px 16px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-t);font-weight:600}
+button:disabled{opacity:.45;cursor:not-allowed}
+#key{width:100%;font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
+.hint{font-size:.78rem;color:var(--muted);margin:4px 0 12px}
+#msg{margin-top:12px;color:var(--muted);font-size:.9rem;min-height:1.4em}
+#msg.err{color:var(--accent)}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
+</head>
+<body>
+<main>
+  <h1>🎼 악보 → 가사 추출기</h1>
+  <p class="sub">PDF·이미지 악보를 여러 개 올리면, 악보에 인쇄된 가사를 페이지별로 읽어 텍스트로 정리해 줍니다.</p>
+  <div class="grid">
+    <section class="card">
+      <h2>0. Anthropic API 키</h2>
+      <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off">
+      <p class="hint">키는 이 브라우저(localStorage)에만 저장되고, Anthropic API로만 전송됩니다. 공용 컴퓨터에서는 사용 후 지워 주세요.</p>
+      <h2>1. 악보 파일 (PDF · JPG · PNG · WEBP)</h2>
+      <div id="drop" tabindex="0">눌러서 선택하거나 파일을 끌어다 놓으세요<br>(여러 개 가능)</div>
+      <input id="file" type="file" accept="application/pdf,image/*" multiple hidden>
+      <ul id="list"></ul>
+      <div class="row">
+        <button id="go" class="primary" disabled>가사 추출하기</button>
+        <button id="stop" disabled>중지</button>
+        <button id="reset" disabled>초기화</button>
+      </div>
+      <div id="msg"></div>
+    </section>
+    <section class="card">
+      <h2>2. 추출된 가사</h2>
+      <div id="out" class="empty">결과가 여기에 표시됩니다.</div>
+      <div class="row">
+        <button id="copy" disabled>전체 복사</button>
+        <button id="save" disabled>TXT로 저장</button>
+      </div>
+    </section>
+  </div>
+</main>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+  var drop=$('drop'),file=$('file'),list=$('list'),go=$('go'),stop=$('stop'),reset=$('reset'),out=$('out'),msg=$('msg'),copyB=$('copy'),saveB=$('save');
+  try{$('key').value=localStorage.getItem('anthropic_key')||''}catch(_){}
+  var items=[],results=[],running=false,ctrl=null,MAXP=60,MODEL='claude-sonnet-5-5';
+
+  var PROMPT="첨부된 이미지는 악보 한 페이지입니다. 오선 아래에 인쇄된 '가사'만 추출해 주세요.\n"+
+    "규칙:\n- 음표, 코드, 빠르기말, 제목, 작곡가 등 가사가 아닌 것은 제외합니다.\n"+
+    "- 악보에 인쇄된 언어 그대로, 읽는 순서대로 적습니다. 절(1절, 2절…)이 나뉘어 있으면 구분하고, 소절 단위로 줄바꿈합니다.\n"+
+    "- 멜리스마로 늘어난 음절 표시(-, _)는 자연스러운 단어로 이어 붙입니다.\n"+
+    "- 읽기 어려운 글자는 추측하지 말고 [?]로 표시합니다.\n"+
+    "- 가사가 없으면 '(가사 없음)'이라고만 답합니다.\n"+
+    "- 설명이나 머리말 없이 가사 텍스트만 출력합니다.";
+
+  function setMsg(t,e){msg.textContent=t||'';msg.className=e?'err':''}
+  function isPdf(f){return f.type==='application/pdf'||/\.pdf$/i.test(f.name)}
+
+  function renderList(){
+    list.textContent='';
+    items.forEach(function(it,i){
+      var li=document.createElement('li');
+      var n=document.createElement('span');n.className='n';n.textContent=it.file.name;
+      var s=document.createElement('span');s.className='s';s.textContent=it.status||'대기';
+      var b=document.createElement('button');b.textContent='✕';b.disabled=running;b.setAttribute('aria-label','삭제');
+      b.onclick=function(){items.splice(i,1);renderList();sync()};
+      li.append(n,s,b);list.appendChild(li);
+    });
+  }
+  function sync(){go.disabled=running||!items.length;reset.disabled=running||(!items.length&&!results.length);stop.disabled=!running}
+
+  function addFiles(fl){
+    var bad=0;
+    Array.prototype.forEach.call(fl,function(f){
+      if(isPdf(f)||/^image\//.test(f.type))items.push({file:f,status:'대기'});else bad++;
+    });
+    if(bad)setMsg('PDF와 이미지 파일만 올릴 수 있어요. ('+bad+'개 제외)',true);else setMsg('');
+    renderList();sync();
+  }
+  drop.addEventListener('click',function(){file.click()});
+  drop.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();file.click()}});
+  file.addEventListener('change',function(){addFiles(file.files);file.value=''});
+  ['dragenter','dragover'].forEach(function(n){drop.addEventListener(n,function(e){e.preventDefault();drop.classList.add('over')})});
+  ['dragleave','drop'].forEach(function(n){drop.addEventListener(n,function(e){e.preventDefault();drop.classList.remove('over')})});
+  drop.addEventListener('drop',function(e){addFiles(e.dataTransfer.files)});
+
+  function toBlob(c){return new Promise(function(res,rej){c.toBlob(function(b){b?res(b):rej(new Error('이미지 변환 실패'))},'image/jpeg',0.88)})}
+  function shrinkImage(f){
+    return new Promise(function(res,rej){
+      var img=new Image(),u=URL.createObjectURL(f);
+      img.onload=function(){
+        var s=Math.min(1,1800/Math.max(img.width,img.height)),c=document.createElement('canvas');
+        c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
+        var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(img,0,0,c.width,c.height);
+        URL.revokeObjectURL(u);toBlob(c).then(res,rej);
+      };
+      img.onerror=function(){rej(new Error('이미지를 열 수 없습니다'))};
+      img.src=u;
+    });
+  }
+  async function renderPdfPage(pdf,p){
+    var page=await pdf.getPage(p),v0=page.getViewport({scale:1});
+    var s=Math.min(3,1800/Math.max(v0.width,v0.height)),vp=page.getViewport({scale:s});
+    var c=document.createElement('canvas');c.width=Math.round(vp.width);c.height=Math.round(vp.height);
+    var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
+    await page.render({canvasContext:x,viewport:vp}).promise;
+    return toBlob(c);
+  }
+
+  function show(){
+    out.textContent='';out.className=results.length?'':'empty';
+    if(!results.length){out.textContent='결과가 여기에 표시됩니다.';return}
+    results.forEach(function(r){
+      var h=document.createElement('h3');h.textContent=r.title;
+      var p=document.createElement('pre');p.textContent=r.text;
+      out.append(h,p);
+    });
+    out.scrollTop=out.scrollHeight;
+    var any=results.some(function(r){return r.text});copyB.disabled=saveB.disabled=!any;
+  }
+  function allText(){return results.map(function(r){return '['+r.title+']\n'+r.text}).join('\n\n')}
+
+  function b64(blob){return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(String(fr.result).split(',')[1])};fr.onerror=function(){rej(new Error('파일 읽기 실패'))};fr.readAsDataURL(blob)})}
+  async function ask(key,blob,sig,title){
+    var r={title:title,text:'…'};results.push(r);show();
+    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',signal:sig,
+      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:MODEL,max_tokens:2000,messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:await b64(blob)}},{type:'text',text:PROMPT}]}]})});
+    if(!resp.ok){results.pop();show();throw {code:resp.status===401?'auth':resp.status===429?'rate_limited':'http',message:'API 오류 ('+resp.status+')'}}
+    var d=await resp.json();
+    r.text=(d.content||[]).filter(function(c){return c.type==='text'}).map(function(c){return c.text}).join('').trim()||'(결과 없음)';show();
+  }
+
+  go.addEventListener('click',async function(){
+    running=true;ctrl=new AbortController();results=[];copyB.disabled=saveB.disabled=true;show();renderList();sync();setMsg('준비 중…');
+    items.forEach(function(it){it.status='대기'});
+    try{
+      var key=$('key').value.trim();
+      if(!key)throw {code:'none',message:'API 키를 입력해 주세요.'};
+      try{localStorage.setItem('anthropic_key',key)}catch(_){}
+      var total=0;
+      for(var i=0;i<items.length;i++){
+        var it=items[i];if(ctrl.signal.aborted)break;
+        it.status='처리 중';renderList();
+        try{
+          if(isPdf(it.file)){
+            if(!window.pdfjsLib)throw new Error('PDF 라이브러리를 불러오지 못했습니다');
+            pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+            var pdf=await pdfjsLib.getDocument({data:await it.file.arrayBuffer()}).promise;
+            var n=Math.min(pdf.numPages,MAXP);
+            for(var p=1;p<=n;p++){
+              if(ctrl.signal.aborted)break;
+              setMsg(it.file.name+' — '+p+'/'+pdf.numPages+'쪽 읽는 중…');it.status=p+'/'+pdf.numPages+'쪽';renderList();
+              await ask(key,await renderPdfPage(pdf,p),ctrl.signal,it.file.name+' · '+p+'쪽');total++;
+            }
+          }else{
+            setMsg(it.file.name+' 읽는 중…');
+            await ask(key,await shrinkImage(it.file),ctrl.signal,it.file.name);total++;
+          }
+          it.status=ctrl.signal.aborted?'중지됨':'완료';
+        }catch(e){
+          if(ctrl.signal.aborted||(e&&e.name==='AbortError')){it.status='중지됨';break}
+          if(e&&(e.code==='auth'||e.code==='rate_limited'))throw e;
+          it.status='오류';results.push({title:it.file.name,text:'⚠ '+((e&&e.message)||'처리 실패')});show();
+        }
+        renderList();
+      }
+      setMsg(ctrl.signal.aborted?'중지했어요.':'완료! '+total+'페이지 처리. 오탈자는 원본과 꼭 대조해 보세요.');
+    }catch(e){
+      var c=e&&e.code;
+      setMsg(c==='auth'?'API 키가 올바르지 않아요.':c==='rate_limited'?'요청이 많아요. 잠시 후 다시 시도해 주세요. (지금까지 결과는 유지됩니다)':'오류: '+((e&&e.message)||'알 수 없음'),true);
+    }
+    running=false;renderList();sync();
+  });
+
+  stop.addEventListener('click',function(){if(ctrl)ctrl.abort()});
+  reset.addEventListener('click',function(){items=[];results=[];renderList();show();copyB.disabled=saveB.disabled=true;setMsg('');sync()});
+
+  copyB.addEventListener('click',function(){
+    try{navigator.clipboard.writeText(allText()).then(function(){setMsg('복사했어요.')},function(){setMsg('복사에 실패했어요.',true)})}
+    catch(e){setMsg('복사에 실패했어요.',true)}
+  });
+  saveB.addEventListener('click',async function(){
+    var u=URL.createObjectURL(new Blob([allText()],{type:'text/plain;charset=utf-8'})),l=document.createElement('a');
+    l.href=u;l.download='lyrics.txt';document.body.appendChild(l);l.click();l.remove();setTimeout(function(){URL.revokeObjectURL(u)},1000);
+  });
+})();
+</script>
+</body>
+</html>
