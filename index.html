@@ -35,11 +35,12 @@ p.sub{margin:0 0 22px;color:var(--muted)}
 button{font:inherit;border-radius:10px;padding:10px 16px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-t);font-weight:600}
 button:disabled{opacity:.45;cursor:not-allowed}
-#key{width:100%;font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
+#lang{width:100%;font:inherit;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--text)}
 .hint{font-size:.78rem;color:var(--muted);margin:4px 0 12px}
 #msg{margin-top:12px;color:var(--muted);font-size:.9rem;min-height:1.4em}
 #msg.err{color:var(--accent)}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
 </head>
@@ -49,9 +50,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
   <p class="sub">PDF·이미지 악보를 여러 개 올리면, 악보에 인쇄된 가사를 페이지별로 읽어 텍스트로 정리해 줍니다.</p>
   <div class="grid">
     <section class="card">
-      <h2>0. Anthropic API 키</h2>
-      <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off">
-      <p class="hint">키는 이 브라우저(localStorage)에만 저장되고, Anthropic API로만 전송됩니다. 공용 컴퓨터에서는 사용 후 지워 주세요.</p>
+      <h2>0. 가사 언어</h2>
+      <select id="lang"><option value="kor+eng">한국어 + 영어</option><option value="eng">영어</option><option value="jpn">일본어</option><option value="chi_sim">중국어(간체)</option></select>
+      <p class="hint">무료 OCR(브라우저 내 처리)이라 키는 필요 없지만, 오선·음표 때문에 오탈자가 많을 수 있어요. 처음 실행 때는 언어 데이터를 내려받느라 시간이 걸립니다.</p>
       <h2>1. 악보 파일 (PDF · JPG · PNG · WEBP)</h2>
       <div id="drop" tabindex="0">눌러서 선택하거나 파일을 끌어다 놓으세요<br>(여러 개 가능)</div>
       <input id="file" type="file" accept="application/pdf,image/*" multiple hidden>
@@ -77,7 +78,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
 (function(){
   var $=function(i){return document.getElementById(i)};
   var drop=$('drop'),file=$('file'),list=$('list'),go=$('go'),stop=$('stop'),reset=$('reset'),out=$('out'),msg=$('msg'),copyB=$('copy'),saveB=$('save');
-  try{$('key').value=localStorage.getItem('anthropic_key')||''}catch(_){}
+  var worker=null,workerLang='';
   var items=[],results=[],running=false,ctrl=null,MAXP=60,MODEL='claude-sonnet-5-5';
 
   var PROMPT="첨부된 이미지는 악보 한 페이지입니다. 오선 아래에 인쇄된 '가사'만 추출해 주세요.\n"+
@@ -124,7 +125,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
     return new Promise(function(res,rej){
       var img=new Image(),u=URL.createObjectURL(f);
       img.onload=function(){
-        var s=Math.min(1,1800/Math.max(img.width,img.height)),c=document.createElement('canvas');
+        var s=Math.min(1,2400/Math.max(img.width,img.height)),c=document.createElement('canvas');
         c.width=Math.round(img.width*s);c.height=Math.round(img.height*s);
         var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(img,0,0,c.width,c.height);
         URL.revokeObjectURL(u);toBlob(c).then(res,rej);
@@ -135,7 +136,7 @@ button:disabled{opacity:.45;cursor:not-allowed}
   }
   async function renderPdfPage(pdf,p){
     var page=await pdf.getPage(p),v0=page.getViewport({scale:1});
-    var s=Math.min(3,1800/Math.max(v0.width,v0.height)),vp=page.getViewport({scale:s});
+    var s=Math.min(3,2400/Math.max(v0.width,v0.height)),vp=page.getViewport({scale:s});
     var c=document.createElement('canvas');c.width=Math.round(vp.width);c.height=Math.round(vp.height);
     var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);
     await page.render({canvasContext:x,viewport:vp}).promise;
@@ -155,25 +156,26 @@ button:disabled{opacity:.45;cursor:not-allowed}
   }
   function allText(){return results.map(function(r){return '['+r.title+']\n'+r.text}).join('\n\n')}
 
-  function b64(blob){return new Promise(function(res,rej){var fr=new FileReader();fr.onload=function(){res(String(fr.result).split(',')[1])};fr.onerror=function(){rej(new Error('파일 읽기 실패'))};fr.readAsDataURL(blob)})}
-  async function ask(key,blob,sig,title){
-    var r={title:title,text:'…'};results.push(r);show();
-    var resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',signal:sig,
-      headers:{'content-type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:MODEL,max_tokens:2000,messages:[{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:'image/jpeg',data:await b64(blob)}},{type:'text',text:PROMPT}]}]})});
-    if(!resp.ok){results.pop();show();throw {code:resp.status===401?'auth':resp.status===429?'rate_limited':'http',message:'API 오류 ('+resp.status+')'}}
-    var d=await resp.json();
-    r.text=(d.content||[]).filter(function(c){return c.type==='text'}).map(function(c){return c.text}).join('').trim()||'(결과 없음)';show();
+  function clean(t){
+    return t.split('\n').map(function(l){return l.replace(/[|_~=]+/g,' ').replace(/\s+/g,' ').trim()}).filter(function(l){
+      var core=l.replace(/\s/g,'');if(core.length<2)return false;
+      var m=l.match(/[가-힣A-Za-z\u3040-\u30ff\u4e00-\u9fff]/g)||[];return m.length/core.length>=0.6;
+    }).join('\n');
+  }
+  async function ask(w,blob,sig,title){
+    var r={title:title,text:'인식 중…'};results.push(r);show();
+    var d=await w.recognize(blob);
+    r.text=clean(d.data.text||'')||'(인식된 가사 없음)';show();
   }
 
   go.addEventListener('click',async function(){
     running=true;ctrl=new AbortController();results=[];copyB.disabled=saveB.disabled=true;show();renderList();sync();setMsg('준비 중…');
     items.forEach(function(it){it.status='대기'});
     try{
-      var key=$('key').value.trim();
-      if(!key)throw {code:'none',message:'API 키를 입력해 주세요.'};
-      try{localStorage.setItem('anthropic_key',key)}catch(_){}
+      setMsg('OCR 엔진 준비 중… (처음에는 시간이 걸려요)');
+      if(!window.Tesseract)throw {code:'none',message:'OCR 라이브러리를 불러오지 못했어요.'};
+      var lang=$('lang').value;
+      if(!worker||workerLang!==lang){if(worker)await worker.terminate();worker=await Tesseract.createWorker(lang);workerLang=lang}
       var total=0;
       for(var i=0;i<items.length;i++){
         var it=items[i];if(ctrl.signal.aborted)break;
@@ -187,11 +189,11 @@ button:disabled{opacity:.45;cursor:not-allowed}
             for(var p=1;p<=n;p++){
               if(ctrl.signal.aborted)break;
               setMsg(it.file.name+' — '+p+'/'+pdf.numPages+'쪽 읽는 중…');it.status=p+'/'+pdf.numPages+'쪽';renderList();
-              await ask(key,await renderPdfPage(pdf,p),ctrl.signal,it.file.name+' · '+p+'쪽');total++;
+              await ask(worker,await renderPdfPage(pdf,p),ctrl.signal,it.file.name+' · '+p+'쪽');total++;
             }
           }else{
             setMsg(it.file.name+' 읽는 중…');
-            await ask(key,await shrinkImage(it.file),ctrl.signal,it.file.name);total++;
+            await ask(worker,await shrinkImage(it.file),ctrl.signal,it.file.name);total++;
           }
           it.status=ctrl.signal.aborted?'중지됨':'완료';
         }catch(e){
