@@ -310,7 +310,7 @@ select:focus-visible,input:focus-visible,button:focus-visible{outline:2px solid 
   // ================= 저장소 =================
   // ① claude.ai 안에서 열면 window.storage 사용
   // ② GitHub Pages 등 일반 웹에서는 FIREBASE_DB_URL 이 있으면 Firebase(공유 데이터), 없으면 이 브라우저(localStorage)에만 저장
-  const FIREBASE_DB_URL = '';   // ★ 예) 'https://내프로젝트-default-rtdb.firebaseio.com'  (비워두면 이 기기에서만 저장됨)
+  const FIREBASE_DB_URL = 'https://내프로젝트-default-rtdb.firebaseio.com';   // ★ 예) 'https://내프로젝트-default-rtdb.firebaseio.com'  (비워두면 이 기기에서만 저장됨)
   const HAS_CLAUDE_STORAGE = typeof window.storage !== 'undefined';
   const USE_REMOTE = !HAS_CLAUDE_STORAGE && !!FIREBASE_DB_URL;
   const DB_BASE = FIREBASE_DB_URL.replace(/\/+$/, '');
